@@ -5,3 +5,5 @@ matplotlib
 pillow
 thefuzz
 PyPDF2
+ipywidgets
+IPython.display
