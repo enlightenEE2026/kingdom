@@ -10,6 +10,8 @@ Original file is located at
 import sys
 import subprocess
 import importlib
+import io
+import os
 
 def ensure_libraries():
     # Maps the import name to the actual pip installation package name
@@ -20,7 +22,6 @@ def ensure_libraries():
         "PIL": "pillow",
         "matplotlib": "matplotlib",
         "numpy": "numpy",
-        # Removed 'streamlit', 'ipywidgets' and 'IPython.display' from required_packages as they are no longer used for the UI.
     }
 
     print("Checking project dependencies...\n")
@@ -37,68 +38,77 @@ def ensure_libraries():
                 print(f"❌ Failed to install '{pip_name}': {e}")
                 sys.exit(1)
 
-# Step 1: Verify and install all missing dependencies
+# Step 1: Verify and install all missing dependencies local-side
 ensure_libraries()
 
-# New imports for file upload in Colab and for clear_output
-from google.colab import files
-from IPython.display import clear_output # Keep clear_output for cleaner output in Colab
+# Import Standard UI Library replacements for local running (Replaces Google Colab components)
+import tkinter as tk
+from tkinter import filedialog
 
-import io
 import easyocr
 import PyPDF2
 from PIL import Image, ImageDraw, ImageFont
 from thefuzz import process, fuzz
-import numpy as np # Import numpy
-import matplotlib.pyplot as plt # Import matplotlib
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Helper function to open native OS file windows locally
+def get_local_file_path(title_text, file_types):
+    root = tk.Tk()
+    root.withdraw() # Hide the main tiny tkinter window
+    root.attributes('-topmost', True) # Bring the selector dialog to the front
+    file_path = filedialog.askopenfilename(title=title_text, filetypes=file_types)
+    root.destroy()
+    return file_path
 
 # 2. Initialize OCR for Chinese Simplified and English
 reader = easyocr.Reader(['ch_sim', 'en'])
 
-# 3. Replaced Interface Elements with simpler inputs
-print("--- 1. UPLOAD FILES & ADJUST SENSITIVITY ---")
+print("--- 1. SELECT LOCAL FILES & ADJUST SENSITIVITY ---")
 
-print("Please upload your image file:")
-uploaded_image = files.upload()
+# Local Image Selection Setup
+print("Opening file selector for your image file...")
+image_path = get_local_file_path("Select Target Image File", [("Image Files", "*.png *.jpg *.jpeg *.bmp *.webp")])
 image_content = None
-image_filename = None
-if uploaded_image:
-    image_filename = next(iter(uploaded_image))
-    image_content = uploaded_image[image_filename]
-    print(f"Uploaded image: {image_filename}")
-else:
-    print("❌ No image file uploaded. Please upload one to proceed.")
 
-print("\nPlease upload your PDF translation file:")
-uploaded_pdf = files.upload()
+if image_path and os.path.exists(image_path):
+    print(f"Selected image: {os.path.basename(image_path)}")
+    with open(image_path, "rb") as f:
+        image_content = f.read()
+else:
+    print("❌ No image file selected. Exiting script.")
+    sys.exit(1)
+
+# Local PDF Selection Setup
+print("\nOpening file selector for your PDF translation file...")
+pdf_path = get_local_file_path("Select PDF Translation Dictionary", [("PDF Files", "*.pdf")])
 pdf_content = None
-pdf_filename = None
-if uploaded_pdf:
-    pdf_filename = next(iter(uploaded_pdf))
-    pdf_content = uploaded_pdf[pdf_filename]
-    print(f"Uploaded PDF: {pdf_filename}")
-else:
-    print("❌ No PDF translation file uploaded. Please upload one to proceed.")
 
-# Simplified sensitivity input
-#sensitivity_threshold_str = input(f"\nEnter Match Sensitivity % (30-100, default 60): ")
-#sensitivity_threshold = int(sensitivity_threshold_str) if sensitivity_threshold_str.isdigit() else 60
-#if not (30 <= sensitivity_threshold <= 100):
-    #print("⚠️ Sensitivity out of range. Setting to default 60.")
-    #sensitivity_threshold = 60
-sensitivity_threshold = 60
+if pdf_path and os.path.exists(pdf_path):
+    print(f"Selected PDF: {os.path.basename(pdf_path)}")
+    with open(pdf_path, "rb") as f:
+        pdf_content = f.read()
+else:
+    print("❌ No PDF translation file selected. Exiting script.")
+    sys.exit(1)
+
+sensitivity_threshold_str = input(f"\nEnter Match Sensitivity % (30-100, default 60): ")
+sensitivity_threshold = int(sensitivity_threshold_str) if sensitivity_threshold_str.isdigit() else 60
+if not (30 <= sensitivity_threshold <= 100):
+    print("⚠️ Sensitivity out of range. Setting to default 60.")
+    sensitivity_threshold = 60
 print(f"Match Sensitivity: {sensitivity_threshold}%")
 
 print("\n--- 2. EXECUTE OVERLAY ---")
 
-# 4. Processing Core (modified to take inputs directly)
+# 4. Processing Core
 def process_and_overlay_simplified(image_content, pdf_content, user_threshold):
     if image_content is None or pdf_content is None:
         print("❌ Both image and PDF files are required to proceed.")
         return
 
-    # Use clear_output here to mimic the widget's output clearing behavior for subsequent runs if the cell is executed multiple times.
-    clear_output(wait=True)
+    # Clear terminal window safely depending on target platform OS
+    os.system('cls' if os.name == 'nt' else 'clear')
     print("⏳ Parsing PDF dictionary and scanning image text... Please wait...")
 
     try:
@@ -109,29 +119,23 @@ def process_and_overlay_simplified(image_content, pdf_content, user_threshold):
         translation_map = {}
         excel_choices = []
 
-        # Read text page-by-page from the PDF
         for page in pdf_reader.pages:
             page_text = page.extract_text()
             if not page_text:
                 continue
 
-            # Split text into lines
             lines = page_text.split('\n')
             for line in lines:
                 line = line.strip()
                 if not line:
                     continue
 
-                # Handle split structures. Assumes standard dictionary formatting like:
-                # '张飞 Zhang Fei' OR '张飞,Zhang Fei' OR '张飞: Zhang Fei'
                 parts = []
                 if ',' in line:
                     parts = line.split(',', 1)
                 elif ':' in line:
                     parts = line.split(':', 1)
                 else:
-                    # Fallback: Split on the first whitespace boundary separating Chinese characters from English
-                    # Finds where Chinese ends and English text begins
                     for idx, char in enumerate(line):
                         if idx > 0 and ord(char) < 128 and ord(line[idx-1]) >= 128:
                             parts = [line[:idx].strip(), line[idx:].strip()]
@@ -151,10 +155,9 @@ def process_and_overlay_simplified(image_content, pdf_content, user_threshold):
             return
 
         # --- PROCESS AND OVERLAY TARGET IMAGE ---
-        original_image = Image.open(io.BytesIO(image_content)).convert("RGBA") # Keep original for side-by-side
-        base_image = original_image.copy() # Create a copy to modify
+        original_image = Image.open(io.BytesIO(image_content)).convert("RGBA")
+        base_image = original_image.copy()
 
-        # Read image layout text blocks (convert PIL Image to NumPy array for EasyOCR)
         ocr_results = reader.readtext(np.array(base_image), detail=1)
 
         if not ocr_results:
@@ -171,28 +174,23 @@ def process_and_overlay_simplified(image_content, pdf_content, user_threshold):
             if not text_clean:
                 continue
 
-            # Fuzzy matching calculation
             best_match, score = process.extractOne(text_clean, excel_choices, scorer=fuzz.token_sort_ratio)
 
             if score >= user_threshold:
                 translation_text = str(translation_map[best_match.lower()])
                 matches_count += 1
 
-                # Compute rectangular corners from point coordinates matrix
                 x_coords = [p[0] for p in box]
                 y_coords = [p[1] for p in box]
                 x_min, y_min = int(min(x_coords)), int(min(y_coords))
                 x_max, y_max = int(max(x_coords)), int(max(y_coords))
 
-                # Paint dark mask panel block over old Chinese character positions
                 draw_layer.rectangle([x_min, y_min, x_max, y_max], fill=(15, 15, 15, 245))
-
-                # Write English text inside boundary box
                 draw_layer.text((x_min + 4, y_min + 2), translation_text, fill=(255, 255, 255, 255), font=font)
 
         print(f"✨ Successfully replaced {matches_count} text blocks!\n")
 
-        # Display original and translated images side-by-side
+        # Display final output window locally via Matplotlib UI window engine
         fig, axes = plt.subplots(1, 2, figsize=(15, 7))
         axes[0].imshow(original_image.convert("RGB"))
         axes[0].set_title("Original Image")
@@ -208,5 +206,5 @@ def process_and_overlay_simplified(image_content, pdf_content, user_threshold):
     except Exception as e:
         print(f"An unexpected error occurred: {str(e)}")
 
-# Call the processing function directly after inputs are gathered
+# Call execution loop function blocks
 process_and_overlay_simplified(image_content, pdf_content, sensitivity_threshold)
