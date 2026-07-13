@@ -5,4 +5,4 @@ matplotlib
 pillow
 thefuzz
 PyPDF2
-google.colab
+tkinter
