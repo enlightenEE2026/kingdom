@@ -7,31 +7,32 @@ Original file is located at
     https://colab.research.google.com/drive/15txxyODtOREPG6VLabimA6KzvAEuIf04
 """
 
-import subprocess
 import sys
+import subprocess
+import importlib
 
 def ensure_libraries():
     # Maps the import name to the actual pip installation package name
     required_packages = {
         "easyocr": "easyocr",
         "PyPDF2": "PyPDF2",
-        "thefuzz": "thefuzz[speed]", # Includes python-Levenshtein for 4-10x faster string matching
-        "PIL": "pillow",              # Imported as PIL, installed as pillow
+        "thefuzz": "thefuzz[speed]",
+        "PIL": "pillow",
         "matplotlib": "matplotlib",
         "numpy": "numpy",
-        "streamlit": "streamlit"
+        "streamlit": "streamlit",
+        "ipywidgets": "ipywidgets",
+        "IPython.display": "ipython"
     }
 
     print("Checking project dependencies...\n")
     for module_name, pip_name in required_packages.items():
         try:
-            # Try to import the module to check existence
-            __import__(module_name)
+            importlib.import_module(module_name)
             print(f"✅ '{module_name}' is ready.")
         except ImportError:
             print(f"⚠️ '{module_name}' not found. Installing package '{pip_name}'...")
             try:
-                # Install the package into the current active environment
                 subprocess.check_call([sys.executable, "-m", "pip", "install", pip_name])
                 print(f"   Successfully installed '{pip_name}'.")
             except subprocess.CalledProcessError as e:
@@ -40,6 +41,7 @@ def ensure_libraries():
 
 # Step 1: Verify and install all missing dependencies
 ensure_libraries()
+
 
 import io
 import easyocr
@@ -57,7 +59,7 @@ reader = easyocr.Reader(['ch_sim', 'en'])
 # 3. Create Interface Elements
 upload_image = widgets.FileUpload(accept='image/*', multiple=False, description="Upload Image")
 upload_pdf = widgets.FileUpload(accept='.pdf', multiple=False, description="Upload PDF")
-si_threshold = widgets.IntSlider(value=70, min=30, max=100, step=5, description='Match Sensitivity %:', style={'description_width': 'initial'})
+si_threshold = widgets.IntSlider(value=50, min=30, max=100, step=5, description='Match Sensitivity %:', style={'description_width': 'initial'})
 btn_translate = widgets.Button(description="Overlay Translation", button_style='success')
 output_area = widgets.Output()
 
