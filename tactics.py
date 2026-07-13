@@ -11,6 +11,43 @@ import sys
 import subprocess
 import importlib
 
+
+import subprocess
+import sys
+
+def install_python_37():
+    print("Starting Python 3.7 installation process...")
+    try:
+        # Update package lists
+        subprocess.run(["sudo", "apt-get", "update"], check=True)
+
+        # Install software-properties-common to manage repositories
+        subprocess.run(["sudo", "apt-get", "install", "-y", "software-properties-common"], check=True)
+
+        # Add the deadsnakes PPA which contains older Python versions
+        subprocess.run(["sudo", "add-apt-repository", "-y", "ppa:deadsnakes/ppa"], check=True)
+
+        # Update package lists again with the new PPA
+        subprocess.run(["sudo", "apt-get", "update"], check=True)
+
+        # Install Python 3.7
+        subprocess.run(["sudo", "apt-get", "install", "-y", "python3.7"], check=True)
+
+        print("\nSuccess! Python 3.7 has been installed.")
+        print("You can verify it by running 'python3.7 --version' in your terminal.")
+
+    except subprocess.CalledProcessError as e:
+        print(f"\nAn error occurred during installation: {e}", file=sys.stderr)
+
+if __name__ == "__main__":
+    # Check if running on Linux
+    if sys.platform.startswith("linux"):
+        install_python_37()
+    else:
+        print("This script is tailored for Linux (Ubuntu/Debian) systems only.")
+
+
+
 def ensure_libraries():
     # Maps the import name to the actual pip installation package name
     required_packages = {
@@ -59,7 +96,7 @@ reader = easyocr.Reader(['ch_sim', 'en'])
 # 3. Create Interface Elements
 upload_image = widgets.FileUpload(accept='image/*', multiple=False, description="Upload Image")
 upload_pdf = widgets.FileUpload(accept='.pdf', multiple=False, description="Upload PDF")
-si_threshold = widgets.IntSlider(value=50, min=30, max=100, step=5, description='Match Sensitivity %:', style={'description_width': 'initial'})
+si_threshold = widgets.IntSlider(value=60, min=30, max=100, step=5, description='Match Sensitivity %:', style={'description_width': 'initial'})
 btn_translate = widgets.Button(description="Overlay Translation", button_style='success')
 output_area = widgets.Output()
 
