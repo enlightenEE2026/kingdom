@@ -7,14 +7,14 @@ Original file is located at
     https://colab.research.google.com/drive/1IUqj6VTCxmvwnpSJN43tqffAmzcC_z_y
 """
 
+import io
+import os
 import sys
 import subprocess
 import importlib
-import io
-import os
 
+# 1. DEPENDENCY MANAGEMENT
 def ensure_libraries():
-    # Maps the import name to the actual pip installation package name
     required_packages = {
         "easyocr": "easyocr",
         "PyPDF2": "PyPDF2",
@@ -22,189 +22,147 @@ def ensure_libraries():
         "PIL": "pillow",
         "matplotlib": "matplotlib",
         "numpy": "numpy",
+        "streamlit": "streamlit",
     }
-
-    print("Checking project dependencies...\n")
     for module_name, pip_name in required_packages.items():
         try:
             importlib.import_module(module_name)
-            print(f"✅ '{module_name}' is ready.")
         except ImportError:
-            print(f"⚠️ '{module_name}' not found. Installing package '{pip_name}'...")
             try:
                 subprocess.check_call([sys.executable, "-m", "pip", "install", pip_name])
-                print(f"   Successfully installed '{pip_name}'.")
-            except subprocess.CalledProcessError as e:
-                print(f"❌ Failed to install '{pip_name}': {e}")
+            except subprocess.CalledProcessError:
                 sys.exit(1)
 
-# Step 1: Verify and install all missing dependencies local-side
 ensure_libraries()
 
-# Import Standard UI Library replacements for local running (Replaces Google Colab components)
-import tkinter as tk
-from tkinter import filedialog
-
+# Import required tools after ensuring they are installed
+import streamlit as st
 import easyocr
 import PyPDF2
 from PIL import Image, ImageDraw, ImageFont
 from thefuzz import process, fuzz
 import numpy as np
-import matplotlib.pyplot as plt
 
-# Helper function to open native OS file windows locally
-def get_local_file_path(title_text, file_types):
-    root = tk.Tk()
-    root.withdraw() # Hide the main tiny tkinter window
-    root.attributes('-topmost', True) # Bring the selector dialog to the front
-    file_path = filedialog.askopenfilename(title=title_text, filetypes=file_types)
-    root.destroy()
-    return file_path
+# 2. CACHE OCR READER (Prevents reloading on every user interaction)
+@st.cache_resource
+def load_ocr_reader():
+    return easyocr.Reader(['ch_sim', 'en'])
 
-# 2. Initialize OCR for Chinese Simplified and English
-reader = easyocr.Reader(['ch_sim', 'en'])
+reader = load_ocr_reader()
 
-print("--- 1. SELECT LOCAL FILES & ADJUST SENSITIVITY ---")
+# 3. STREAMLIT APP LAYOUT
+st.set_page_config(layout="wide")
+st.title("🌐 Image Translation Overlay Tool")
 
-# Local Image Selection Setup
-print("Opening file selector for your image file...")
-image_path = get_local_file_path("Select Target Image File", [("Image Files", "*.png *.jpg *.jpeg *.bmp *.webp")])
-image_content = None
+st.markdown("### 1. Upload Files & Adjust Sensitivity")
 
-if image_path and os.path.exists(image_path):
-    print(f"Selected image: {os.path.basename(image_path)}")
-    with open(image_path, "rb") as f:
-        image_content = f.read()
-else:
-    print("❌ No image file selected. Exiting script.")
-    sys.exit(1)
+# Create layout columns for file uploaders
+col1, col2 = st.columns(2)
+with col1:
+    uploaded_image_file = st.file_uploader("Upload Image File", type=["png", "jpg", "jpeg"])
+with col2:
+    uploaded_pdf_file = st.file_uploader("Upload PDF Translation Dictionary", type=["pdf"])
 
-# Local PDF Selection Setup
-print("\nOpening file selector for your PDF translation file...")
-pdf_path = get_local_file_path("Select PDF Translation Dictionary", [("PDF Files", "*.pdf")])
-pdf_content = None
+# Configuration settings
+user_threshold = st.slider('Match Sensitivity %:', min_value=30, max_value=100, value=60, step=5)
 
-if pdf_path and os.path.exists(pdf_path):
-    print(f"Selected PDF: {os.path.basename(pdf_path)}")
-    with open(pdf_path, "rb") as f:
-        pdf_content = f.read()
-else:
-    print("❌ No PDF translation file selected. Exiting script.")
-    sys.exit(1)
+st.markdown("### 2. Execute Overlay")
+execute_btn = st.button("Translate and Overlay Text", type="primary")
 
-sensitivity_threshold_str = input(f"\nEnter Match Sensitivity % (30-100, default 60): ")
-sensitivity_threshold = int(sensitivity_threshold_str) if sensitivity_threshold_str.isdigit() else 60
-if not (30 <= sensitivity_threshold <= 100):
-    print("⚠️ Sensitivity out of range. Setting to default 60.")
-    sensitivity_threshold = 60
-print(f"Match Sensitivity: {sensitivity_threshold}%")
+# 4. TRANSLATION PROCESSING ENGINE
+if execute_btn:
+    if not uploaded_image_file:
+        st.error("Please upload an image file.")
+    elif not uploaded_pdf_file:
+        st.error("Please upload your PDF translation file.")
+    else:
+        with st.spinner("Parsing PDF dictionary and scanning image text... Please wait..."):
+            try:
+                # --- PARSE PDF TRANSLATION DICTIONARY ---
+                pdf_data = uploaded_pdf_file.read()
+                pdf_file = io.BytesIO(pdf_data)
+                pdf_reader = PyPDF2.PdfReader(pdf_file)
 
-print("\n--- 2. EXECUTE OVERLAY ---")
+                translation_map = {}
+                excel_choices = []
 
-# 4. Processing Core
-def process_and_overlay_simplified(image_content, pdf_content, user_threshold):
-    if image_content is None or pdf_content is None:
-        print("❌ Both image and PDF files are required to proceed.")
-        return
+                for page in pdf_reader.pages:
+                    page_text = page.extract_text()
+                    if not page_text:
+                        continue
 
-    # Clear terminal window safely depending on target platform OS
-    os.system('cls' if os.name == 'nt' else 'clear')
-    print("⏳ Parsing PDF dictionary and scanning image text... Please wait...")
+                    lines = page_text.split('\n')
+                    for line in lines:
+                        line = line.strip()
+                        if not line:
+                            continue
 
-    try:
-        # --- PARSE PDF TRANSLATION DICTIONARY ---
-        pdf_file = io.BytesIO(pdf_content)
-        pdf_reader = PyPDF2.PdfReader(pdf_file)
+                        parts = []
+                        if ',' in line:
+                            parts = line.split(',', 1)
+                        elif ':' in line:
+                            parts = line.split(':', 1)
+                        else:
+                            for idx, char in enumerate(line):
+                                if idx > 0 and ord(char) < 128 and ord(line[idx-1]) >= 128:
+                                    parts = [line[:idx].strip(), line[idx:].strip()]
+                                    break
 
-        translation_map = {}
-        excel_choices = []
+                        if len(parts) == 2:
+                            source_text = parts[0].strip()
+                            translation_text = parts[1].strip()
 
-        for page in pdf_reader.pages:
-            page_text = page.extract_text()
-            if not page_text:
-                continue
+                            if source_text and translation_text:
+                                translation_map[source_text.lower()] = translation_text
+                                excel_choices.append(source_text)
 
-            lines = page_text.split('\n')
-            for line in lines:
-                line = line.strip()
-                if not line:
-                    continue
-
-                parts = []
-                if ',' in line:
-                    parts = line.split(',', 1)
-                elif ':' in line:
-                    parts = line.split(':', 1)
+                if not translation_map:
+                    st.error("Could not extract any valid Source/Translation pairs from the PDF layout.")
+                    st.info("Ensure your PDF format maps terms cleanly (e.g., '张飞, Zhang Fei' or '张飞: Zhang Fei').")
                 else:
-                    for idx, char in enumerate(line):
-                        if idx > 0 and ord(char) < 128 and ord(line[idx-1]) >= 128:
-                            parts = [line[:idx].strip(), line[idx:].strip()]
-                            break
+                    # --- PROCESS AND OVERLAY TARGET IMAGE ---
+                    image_data = uploaded_image_file.read()
+                    original_image = Image.open(io.BytesIO(image_data)).convert("RGBA")
+                    base_image = original_image.copy()
 
-                if len(parts) == 2:
-                    source_text = parts[0].strip()
-                    translation_text = parts[1].strip()
+                    ocr_results = reader.readtext(np.array(base_image), detail=1)
 
-                    if source_text and translation_text:
-                        translation_map[source_text.lower()] = translation_text
-                        excel_choices.append(source_text)
+                    if not ocr_results:
+                        st.warning("No text blocks detected in the image.")
+                    else:
+                        draw_layer = ImageDraw.Draw(base_image)
+                        font = ImageFont.load_default()
+                        matches_count = 0
 
-        if not translation_map:
-            print("❌ Could not extract any valid Source/Translation pairs from the PDF layout.")
-            print("💡 Ensure your PDF format maps terms cleanly (e.g., '张飞, Zhang Fei' or '张飞: Zhang Fei').")
-            return
+                        for box, text_raw, confidence in ocr_results:
+                            text_clean = text_raw.strip()
+                            if not text_clean:
+                                continue
 
-        # --- PROCESS AND OVERLAY TARGET IMAGE ---
-        original_image = Image.open(io.BytesIO(image_content)).convert("RGBA")
-        base_image = original_image.copy()
+                            best_match, score = process.extractOne(text_clean, excel_choices, scorer=fuzz.token_sort_ratio)
 
-        ocr_results = reader.readtext(np.array(base_image), detail=1)
+                            if score >= user_threshold:
+                                translation_text = str(translation_map[best_match.lower()])
+                                matches_count += 1
 
-        if not ocr_results:
-            print("❓ No text blocks detected in the image.")
-            return
+                                x_coords = [p[0] for p in box]
+                                y_coords = [p[1] for p in box]
+                                x_min, y_min = int(min(x_coords)), int(min(y_coords))
+                                x_max, y_max = int(max(x_coords)), int(max(y_coords))
 
-        draw_layer = ImageDraw.Draw(base_image)
-        font = ImageFont.load_default()
+                                draw_layer.rectangle([x_min, y_min, x_max, y_max], fill=(15, 15, 15, 245))
+                                draw_layer.text((x_min + 4, y_min + 2), translation_text, fill=(255, 255, 255, 255), font=font)
 
-        matches_count = 0
+                        st.success(f"✨ Successfully replaced {matches_count} text blocks!")
 
-        for box, text_raw, confidence in ocr_results:
-            text_clean = text_raw.strip()
-            if not text_clean:
-                continue
+                        # --- DISPLAY IMAGES SIDE BY SIDE IN STREAMLIT ---
+                        out_col1, out_col2 = st.columns(2)
+                        with out_col1:
+                            st.subheader("Original Image")
+                            st.image(original_image, use_container_width=True)
+                        with out_col2:
+                            st.subheader("Translated Overlay")
+                            st.image(base_image, use_container_width=True)
 
-            best_match, score = process.extractOne(text_clean, excel_choices, scorer=fuzz.token_sort_ratio)
-
-            if score >= user_threshold:
-                translation_text = str(translation_map[best_match.lower()])
-                matches_count += 1
-
-                x_coords = [p[0] for p in box]
-                y_coords = [p[1] for p in box]
-                x_min, y_min = int(min(x_coords)), int(min(y_coords))
-                x_max, y_max = int(max(x_coords)), int(max(y_coords))
-
-                draw_layer.rectangle([x_min, y_min, x_max, y_max], fill=(15, 15, 15, 245))
-                draw_layer.text((x_min + 4, y_min + 2), translation_text, fill=(255, 255, 255, 255), font=font)
-
-        print(f"✨ Successfully replaced {matches_count} text blocks!\n")
-
-        # Display final output window locally via Matplotlib UI window engine
-        fig, axes = plt.subplots(1, 2, figsize=(15, 7))
-        axes[0].imshow(original_image.convert("RGB"))
-        axes[0].set_title("Original Image")
-        axes[0].axis('off')
-
-        axes[1].imshow(base_image.convert("RGB"))
-        axes[1].set_title("Translated Overlay")
-        axes[1].axis('off')
-
-        plt.tight_layout()
-        plt.show()
-
-    except Exception as e:
-        print(f"An unexpected error occurred: {str(e)}")
-
-# Call execution loop function blocks
-process_and_overlay_simplified(image_content, pdf_content, sensitivity_threshold)
+            except Exception as e:
+                st.error(f"An unexpected error occurred: {str(e)}")
