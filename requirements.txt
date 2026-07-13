@@ -1,9 +1,7 @@
 streamlit
 numpy
 easyocr
-PyPDF2
-thefuzz
-ipywidgets
-IPython.display
 matplotlib
 pillow
+thefuzz
+PyPDF2
