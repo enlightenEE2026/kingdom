@@ -2,7 +2,6 @@ streamlit
 numpy
 easyocr
 PyPDF2
-PIL
 thefuzz
 ipywidgets
 IPython.display
