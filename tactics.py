@@ -8,33 +8,6 @@ Original file is located at
 """
 
 import io
-import os
-import sys
-import subprocess
-import importlib
-
-# 1. DEPENDENCY MANAGEMENT
-def ensure_libraries():
-    required_packages = {
-        "easyocr": "easyocr",
-        "PyPDF2": "PyPDF2",
-        "thefuzz": "thefuzz[speed]",
-        "PIL": "pillow",
-        "matplotlib": "matplotlib",
-        "numpy": "numpy",
-        "streamlit": "streamlit",
-    }
-    for module_name, pip_name in required_packages.items():
-        try:
-            importlib.import_module(module_name)
-        except ImportError:
-            try:
-                subprocess.check_call([sys.executable, "-m", "pip", "install", pip_name])
-            except subprocess.CalledProcessError:
-                sys.exit(1)
-
-ensure_libraries()
-
 import streamlit as st
 import easyocr
 import PyPDF2
@@ -42,29 +15,23 @@ from PIL import Image, ImageDraw, ImageFont
 from thefuzz import process, fuzz
 import numpy as np
 
-# 2. CACHE OCR READER
-@st.cache_resource
-def load_ocr_reader():
-    return easyocr.Reader(['ch_sim', 'en'])
-
-reader = load_ocr_reader()
-
-# 3. STREAMLIT APP LAYOUT
-st.set_page_config(layout="wide")
+# 1. APPLICATION SETUP & PAGE LAYOUT
+st.set_page_config(layout="wide", page_title="Image Translation Overlay Tool")
 st.title("🌐 Image Translation Overlay Tool")
 
-# Initialize Session State Variables to prevent execution loss
-if "ocr_results" not in st.session_state:
-    st.session_state.ocr_results = None
-if "translation_map" not in st.session_state:
-    st.session_state.translation_map = {}
-if "excel_choices" not in st.session_state:
-    st.session_state.excel_choices = []
-if "processed_image_bytes" not in st.session_state:
-    st.session_state.processed_image_bytes = None
-if "original_image" not in st.session_state:
-    st.session_state.original_image = None
+# 2. CACHE OCR READER (Prevents reloading on every user interaction)
+@st.cache_resource
+def load_ocr_reader():
+    # Pre-loads models for Simplified Chinese and English
+    return easyocr.Reader(['ch_sim', 'en'])
 
+try:
+    reader = load_ocr_reader()
+except Exception as ocr_init_err:
+    st.error("Failed to initialize EasyOCR engine. Ensure system dependencies are met.")
+    st.stop()
+
+# 3. INTERFACE BUILDER
 st.markdown("### 1. Upload Files & Adjust Sensitivity")
 
 col1, col2 = st.columns(2)
@@ -73,50 +40,36 @@ with col1:
 with col2:
     uploaded_pdf_file = st.file_uploader("Upload PDF Translation Dictionary", type=["pdf"])
 
-# Interactive Configuration Controls (Changing these will NOT re-trigger OCR)
-config_col1, config_col2 = st.columns(2)
-with config_col1:
-    user_threshold = st.slider('Match Sensitivity %:', min_value=30, max_value=100, value=60, step=5)
-with config_col2:
-    zoom_factor = st.slider(
-        "Render Resolution Quality:",
-        min_value=1.0,
-        max_value=3.0,
-        value=1.0,
-        step=0.5,
-        help="Upscales canvas dimensions for crystal clear text rendering."
-    )
+user_threshold = st.slider('Match Sensitivity %:', min_value=30, max_value=100, value=60, step=5)
 
-st.markdown("### 2. Execute Analysis")
-execute_btn = st.button("Scan Text & Map Dictionary", type="primary")
+st.markdown("### 2. Execute Overlay")
+execute_btn = st.button("Translate and Overlay Text", type="primary")
 
-# --- HEAVY COMPUTATION BLOCK (Runs only on click) ---
+# 4. PROCESSING PIPELINE
 if execute_btn:
     if not uploaded_image_file:
         st.error("Please upload an image file.")
     elif not uploaded_pdf_file:
         st.error("Please upload your PDF translation file.")
     else:
-        with st.spinner("Analyzing layouts and running OCR models... Please wait..."):
+        with st.spinner("Parsing PDF dictionary and scanning image text... Please wait..."):
 
-            # Reset stale session data
-            st.session_state.ocr_results = None
-            st.session_state.translation_map = {}
-            st.session_state.excel_choices = []
+            # --- Stream Pointer Resets ---
+            uploaded_pdf_file.seek(0)
+            uploaded_image_file.seek(0)
 
+            translation_map = {}
+            excel_choices = []
             valid_pdf = True
 
-            # 1. Parse PDF
+            # --- 1. SAFE PDF PARSING ---
             try:
-                pdf_data = uploaded_pdf_file.read()
-                pdf_file = io.BytesIO(pdf_data)
-                pdf_reader = PyPDF2.PdfReader(pdf_file)
-
+                pdf_reader = PyPDF2.PdfReader(io.BytesIO(uploaded_pdf_file.read()))
                 if len(pdf_reader.pages) == 0:
                     st.error("❌ The uploaded PDF appears to be empty.")
                     valid_pdf = False
             except Exception as e:
-                st.error("❌ Invalid PDF File structure.")
+                st.error("❌ Invalid PDF File. Please ensure you uploaded a true PDF document.")
                 st.info(f"Technical details: {str(e)}")
                 valid_pdf = False
 
@@ -138,6 +91,7 @@ if execute_btn:
                             elif ':' in line:
                                 parts = line.split(':', 1)
                             else:
+                                # Find transitions between non-ASCII (Chinese) and ASCII character spaces
                                 for idx, char in enumerate(line):
                                     if idx > 0 and ord(char) < 128 and ord(line[idx-1]) >= 128:
                                         parts = [line[:idx].strip(), line[idx:].strip()]
@@ -148,120 +102,85 @@ if execute_btn:
                                 translation_text = parts[1].strip()
 
                                 if source_text and translation_text:
-                                    st.session_state.translation_map[source_text.lower()] = translation_text
-                                    st.session_state.excel_choices.append(source_text)
+                                    translation_map[source_text.lower()] = translation_text
+                                    excel_choices.append(source_text)
 
-                    if not st.session_state.translation_map:
-                        st.error("❌ Layout Parsing Error: No valid translation pairs found.")
+                    if not translation_map:
+                        st.error("❌ Layout Parsing Error: No valid translation pairs found inside this file.")
+                        st.info("💡 Ensure your PDF uses clear indicators like: '张飞, Zhang Fei' or '张飞: Zhang Fei'.")
                         valid_pdf = False
+
                 except Exception as e:
                     st.error(f"❌ Failed to extract dictionary content: {str(e)}")
                     valid_pdf = False
 
-            # 2. Process Image OCR
+            # --- 2. SAFE IMAGE PROCESSING & BOX OVERLAY ---
             if valid_pdf:
                 try:
-                    image_data = uploaded_image_file.read()
-                    st.session_state.original_image = Image.open(io.BytesIO(image_data)).convert("RGBA")
+                    original_image = Image.open(io.BytesIO(uploaded_image_file.read())).convert("RGBA")
+                    base_image = original_image.copy()
 
-                    # Store OCR results in cache layer
-                    st.session_state.ocr_results = reader.readtext(np.array(st.session_state.original_image), detail=1)
+                    # Convert to NumPy array for EasyOCR ingestion
+                    img_np = np.array(base_image)
+                    ocr_results = reader.readtext(img_np, detail=1)
 
-                    if not st.session_state.ocr_results:
+                    if not ocr_results:
                         st.warning("❓ No text blocks detected in this image layout.")
+                    else:
+                        draw_layer = ImageDraw.Draw(base_image)
+                        matches_count = 0
+
+                        for box, text_raw, confidence in ocr_results:
+                            text_clean = text_raw.strip()
+                            if not text_clean or not excel_choices:
+                                continue
+
+                            # Fuzzy match extraction
+                            best_match, score = process.extractOne(
+                                text_clean,
+                                excel_choices,
+                                scorer=fuzz.token_sort_ratio
+                            )
+
+                            if score >= user_threshold:
+                                translation_text = str(translation_map[best_match.lower()])
+                                matches_count += 1
+
+                                # Extract structural dimensions
+                                x_coords = [p[0] for p in box]
+                                y_coords = [p[1] for p in box]
+                                x_min, y_min = int(min(x_coords)), int(min(y_coords))
+                                x_max, y_max = int(max(x_coords)), int(max(y_coords))
+
+                                box_width = x_max - x_min
+                                box_height = y_max - y_min
+
+                                # Solid opaque mask to wipe clean original source characters
+                                draw_layer.rectangle([x_min, y_min, x_max, y_max], fill=(15, 15, 15, 255))
+
+                                # Dynamic Font Calculation Fallback
+                                font_size = max(10, int(box_height * 0.75))
+                                try:
+                                    # Attempts using a clean standard cross-platform font family
+                                    font = ImageFont.truetype("arial.ttf", font_size)
+                                except IOError:
+                                    font = ImageFont.load_default()
+
+                                # Draw the translation centered vertically inside the mask block
+                                draw_layer.text((x_min + 4, y_min + (box_height - font_size) // 4),
+                                                translation_text, fill=(255, 255, 255, 255), font=font)
+
+                        st.success(f"✨ Successfully replaced {matches_count} text blocks!")
+
+                        # --- DISPLAY SIDE-BY-SIDE RESULT COLS ---
+                        out_col1, out_col2 = st.columns(2)
+                        with out_col1:
+                            st.subheader("Original Image")
+                            st.image(original_image, use_container_width=True)
+                        with out_col2:
+                            st.subheader("Translated Overlay")
+                            st.image(base_image, use_container_width=True)
+
                 except Exception as img_err:
-                    st.error("❌ Invalid Image File format.")
+                    st.error("❌ Invalid Image File. Please verify your uploaded file.")
                     st.info(f"Technical details: {str(img_err)}")
-
-# --- LIGHT RENDER LOOP (Runs automatically whenever sliders move) ---
-if st.session_state.ocr_results and st.session_state.original_image:
-    try:
-        orig_img = st.session_state.original_image
-
-        # Scale drawing layers based on active zoom factor slider
-        if zoom_factor > 1.0:
-            new_w = int(orig_img.width * zoom_factor)
-            new_h = int(orig_img.height * zoom_factor)
-            work_image = orig_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-        else:
-            work_image = orig_img.copy()
-
-        draw_layer = ImageDraw.Draw(work_image)
-        scaled_font_size = int(14 * zoom_factor)
-
-        try:
-            font = ImageFont.truetype("DejaVuSans.ttf", scaled_font_size)
-        except IOError:
-            try:
-                font = ImageFont.truetype("arial.ttf", scaled_font_size)
-            except IOError:
-                font = ImageFont.load_default()
-
-        matches_count = 0
-
-        for box, text_raw, confidence in st.session_state.ocr_results:
-            text_clean = text_raw.strip()
-            if not text_clean or not st.session_state.excel_choices:
-                continue
-
-            best_match, score = process.extractOne(
-                text_clean,
-                st.session_state.excel_choices,
-                scorer=fuzz.token_sort_ratio
-            )
-
-            if score >= user_threshold:
-                translation_text = str(st.session_state.translation_map[best_match.lower()])
-                matches_count += 1
-
-                # Calculate coordinates scaled up by our resolution multiplier
-                x_coords = [p[0] * zoom_factor for p in box]
-                y_coords = [p[1] * zoom_factor for p in box]
-                x_min, y_min = int(min(x_coords)), int(min(y_coords))
-                x_max, y_max = int(max(x_coords)), int(max(y_coords))
-
-                # Background mask
-                draw_layer.rectangle([x_min, y_min, x_max, y_max], fill=(15, 15, 15, 245))
-
-                # Perfect alignment text bounding box math
-                text_bbox = draw_layer.text_bbox((0, 0), translation_text, font=font)
-                text_w = text_bbox[2] - text_bbox[0]
-                text_h = text_bbox[3] - text_bbox[1]
-
-                box_w = x_max - x_min
-                box_h = y_max - y_min
-
-                text_x = x_min + (box_w - text_w) // 2
-                text_y = y_min + (box_h - text_h) // 2
-
-                draw_layer.text((text_x, text_y), translation_text, fill=(255, 255, 255, 255), font=font)
-
-        st.success(f"✨ Successfully replaced {matches_count} text blocks!")
-
-        # Export Buffer preparation
-        output_buffer = io.BytesIO()
-        work_image.convert("RGB").save(output_buffer, format="PNG", quality=100)
-        processed_image_bytes = output_buffer.getvalue()
-
-        # Structural UI Display Framework
-        st.markdown(
-            "<style>div[data-testid='stColumn'] { overflow: auto !important; max-height: 75vh; }</style>",
-            unsafe_allow_html=True
-        )
-
-        out_col1, out_col2 = st.columns(2)
-        with out_col1:
-            st.subheader("Original Image")
-            st.image(orig_img, use_container_width=True)
-        with out_col2:
-            st.subheader("Translated Overlay")
-            st.image(work_image, use_container_width=True)
-            st.download_button(
-                label="💾 Download Razor-Sharp Image",
-                data=processed_image_bytes,
-                file_name="sharp_translated_overlay.png",
-                mime="image/png"
-            )
-
-    except Exception as render_err:
-        st.error("❌ Live render pipeline error encountered.")
