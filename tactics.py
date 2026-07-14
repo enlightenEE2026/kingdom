@@ -114,6 +114,7 @@ if execute_btn:
                     st.error(f"❌ Failed to extract dictionary content: {str(e)}")
                     valid_pdf = False
 
+
             # --- 2. SAFE IMAGE PROCESSING & BOX OVERLAY ---
             if valid_pdf:
                 try:
@@ -161,7 +162,6 @@ if execute_btn:
                                 # Dynamic Font Calculation Fallback
                                 font_size = max(10, int(box_height * 0.75))
                                 try:
-                                    # Attempts using a clean standard cross-platform font family
                                     font = ImageFont.truetype("arial.ttf", font_size)
                                 except IOError:
                                     font = ImageFont.load_default()
@@ -171,6 +171,23 @@ if execute_btn:
                                                 translation_text, fill=(255, 255, 255, 255), font=font)
 
                         st.success(f"✨ Successfully replaced {matches_count} text blocks!")
+
+                        # --- CONVERT PROCESSED IMAGE TO DOWNLOADABLE BUFFER ---
+                        # Convert to RGB to ensure clean, standardized high-res PNG serialization
+                        final_output_image = base_image.convert("RGB")
+                        img_buffer = io.BytesIO()
+                        final_output_image.save(img_buffer, format="PNG", quality=100)
+                        img_buffer.seek(0)
+
+                        # --- EXPORT ACTION INTERFACE ---
+                        st.markdown("### 3. Save Translated File")
+                        st.download_button(
+                            label="💾 Download Translated High-Res PNG",
+                            data=img_buffer,
+                            file_name="translated_overlay_output.png",
+                            mime="image/png",
+                            type="secondary"
+                        )
 
                         # --- DISPLAY SIDE-BY-SIDE RESULT COLS ---
                         out_col1, out_col2 = st.columns(2)
